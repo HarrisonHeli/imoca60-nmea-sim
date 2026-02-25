@@ -1,11 +1,15 @@
 import tkinter as tk
 from tkinter import ttk
+import argparse
 import socket
 import threading
 import time
 import math
 import random
 import requests
+import json
+import os
+
 from datetime import datetime
 
 # --- Simplified IMOCA 60 Polar ---
@@ -70,7 +74,7 @@ def format_lat_lon(dec_deg, is_lat):
 def int_to_bin(val, bits):
     val = int(val)
     if val < 0:
-        val = (1 << bits) + val  # 2's complement
+        val = (1 << bits) + val
     return f"{val:0{bits}b}"
 
 
@@ -102,22 +106,22 @@ class VirtualShip:
 
     def generate_aivdm(self):
         payload = ""
-        payload += int_to_bin(1, 6)  # Message Type 1
-        payload += int_to_bin(0, 2)  # Repeat Indicator
+        payload += int_to_bin(1, 6)
+        payload += int_to_bin(0, 2)
         payload += int_to_bin(self.mmsi, 30)
-        payload += int_to_bin(0, 4)  # Nav Status (0 = Under way using engine)
-        payload += int_to_bin(0, 8)  # ROT
+        payload += int_to_bin(0, 4)
+        payload += int_to_bin(0, 8)
         payload += int_to_bin(min(self.sog, 102.2) * 10, 10)
-        payload += int_to_bin(1, 1)  # Position Accuracy
+        payload += int_to_bin(1, 1)
         payload += int_to_bin(self.lon * 600000, 28)
         payload += int_to_bin(self.lat * 600000, 27)
         payload += int_to_bin(self.cog * 10, 12)
-        payload += int_to_bin(self.cog, 9)  # True Heading (Assume same as COG for simplicity)
-        payload += int_to_bin(60, 6)  # Time Stamp (60 = not available)
-        payload += int_to_bin(0, 2)  # Maneuver Indicator
-        payload += int_to_bin(0, 3)  # Spare
-        payload += int_to_bin(0, 1)  # RAIM
-        payload += int_to_bin(0, 19)  # Radio Status
+        payload += int_to_bin(self.cog, 9)
+        payload += int_to_bin(60, 6)
+        payload += int_to_bin(0, 2)
+        payload += int_to_bin(0, 3)
+        payload += int_to_bin(0, 1)
+        payload += int_to_bin(0, 19)
 
         ascii_payload = to_6bit_ascii(payload)
         sentence = f"!AIVDM,1,1,,A,{ascii_payload},0"
@@ -159,11 +163,19 @@ class SailboatSim:
         self.last_weather_update = 0
         self.ais_targets = []
 
+        # Stored network configs for thread-safe saving
+        self.tcp_port_str = ""
+        self.udp_ip_str = ""
+        self.udp_port_str = ""
+
     def start(self):
         self.running = True
-        self.tcp_port = int(self.ui.tcp_port_var.get())
-        self.udp_ip = self.ui.udp_ip_var.get()
-        self.udp_port = int(self.ui.udp_port_var.get())
+        self.tcp_port_str = self.ui.tcp_port_var.get()
+        self.udp_ip_str = self.ui.udp_ip_var.get()
+        self.udp_port_str = self.ui.udp_port_var.get()
+
+        self.tcp_port = int(self.tcp_port_str)
+        self.udp_port = int(self.udp_port_str)
 
         self.lat = float(self.ui.lat_var.get())
         self.lon = float(self.ui.lon_var.get())
@@ -179,7 +191,6 @@ class SailboatSim:
         self.udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.udp_socket.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
 
-        # Force immediate weather update on start
         self.last_weather_update = 0
 
         threading.Thread(target=self.tcp_server_thread, daemon=True).start()
@@ -214,6 +225,26 @@ class SailboatSim:
 
         threading.Thread(target=fetch, daemon=True).start()
 
+    def save_state_from_thread(self):
+        """Thread-safe state saving using cached parameters."""
+        data = {
+            "tcp_port": self.tcp_port_str,
+            "udp_ip": self.udp_ip_str,
+            "udp_port": self.udp_port_str,
+            "lat": f"{self.lat:.4f}",
+            "lon": f"{self.lon:.4f}",
+            "heading": f"{self.heading:.1f}",
+            "sea_state": self.sea_state,
+            "gust": self.gust_multiplier,
+            "water_temp": self.water_temp,
+            "depth": self.depth_base
+        }
+        try:
+            with open("sim_state.json", "w") as f:
+                json.dump(data, f, indent=4)
+        except:
+            pass  # Ignore write collisions during rapid looping
+
     def physics_loop(self):
         dt = 0.5
         t = 0
@@ -221,7 +252,7 @@ class SailboatSim:
 
         while self.running:
             current_time = time.time()
-            if current_time - self.last_weather_update > 600:  # 600 seconds = 10 minutes
+            if current_time - self.last_weather_update > 600:
                 self.fetch_weather()
                 self.last_weather_update = current_time
 
@@ -232,7 +263,6 @@ class SailboatSim:
 
             self.depth_current = self.depth_base + (math.sin(t * 0.2) * self.sea_state * 0.5)
 
-            # Wind and Gusts simulation
             current_tws = self.base_tws
             if random.random() < 0.2:
                 gust = (random.random() * (self.gust_multiplier - 1.0)) * self.base_tws
@@ -241,7 +271,6 @@ class SailboatSim:
             twa_rel = (self.twd - self.heading + 360) % 360
             self.sog = get_polar_speed(current_tws, twa_rel)
 
-            # Apparent Wind Vector Math
             twa_rad = math.radians(twa_rel)
             wind_x = current_tws * math.cos(twa_rad)
             wind_y = current_tws * math.sin(twa_rad)
@@ -250,7 +279,6 @@ class SailboatSim:
             self.aws = math.sqrt(app_x ** 2 + app_y ** 2)
             self.awa = math.degrees(math.atan2(app_y, app_x)) % 360
 
-            # Pitch and Roll
             twa_sym = twa_rel if twa_rel <= 180 else twa_rel - 360
             heel_factor = math.sin(math.radians(abs(twa_sym)))
             base_roll = heel_factor * (current_tws * 0.8)
@@ -258,7 +286,6 @@ class SailboatSim:
             self.roll = (base_roll + wave_roll) * (1 if twa_sym > 0 else -1)
             self.pitch = math.cos(t * 2.0) * self.sea_state * (self.sog / 10.0)
 
-            # Weather Helm & Autopilot
             weather_helm_force = self.roll * (self.sog / 15.0) * 0.4
             natural_turn_rate = -weather_helm_force
             hdg_error = (self.target_heading - self.heading + 180) % 360 - 180
@@ -274,18 +301,20 @@ class SailboatSim:
             self.heading += self.turn_rate * dt
             self.heading %= 360
 
-            # Update Position
             dist_nm = self.sog * (dt / 3600.0)
             self.lat += (dist_nm * math.cos(math.radians(self.heading))) / 60.0
             self.lon += (dist_nm * math.sin(math.radians(self.heading))) / (60.0 * math.cos(math.radians(self.lat)))
 
-            # Update AIS Targets
             for ship in self.ais_targets:
                 ship.update(dt)
 
             self.broadcast_nmea(current_tws, twa_rel, tick_count)
             self.ui.update_readouts(self.sog, self.heading, self.pitch, self.roll, self.lat, self.lon, self.aws,
                                     self.awa, self.rudder_angle)
+
+            # Save position to JSON every 5 seconds (10 ticks at 0.5 dt)
+            if tick_count % 10 == 0 and tick_count > 0:
+                self.save_state_from_thread()
 
             t += dt
             tick_count += 1
@@ -298,16 +327,12 @@ class SailboatSim:
 
         sentences = []
 
-        # Core Navigation & Instruments
         lat_str = format_lat_lon(self.lat, True)
         lon_str = format_lat_lon(self.lon, False)
         rmc_core = f"GPRMC,{time_str},A,{lat_str},{lon_str},{self.sog:.1f},{self.heading:.1f},{date_str},,,"
         sentences.append(f"${rmc_core}*{generate_checksum(rmc_core)}\r\n")
 
-        # COMMENT THIS OUT - Let Tactics calculate True Wind itself
-        # mwv_t_core = f"IIMWV,{twa_rel:.1f},T,{tws:.1f},N,A"
-        # sentences.append(f"${mwv_t_core}*{generate_checksum(mwv_t_core)}\r\n")
-
+        # Let Tactics calculate True Wind itself based on VHW and MWV (Apparent)
         mwv_r_core = f"IIMWV,{self.awa:.1f},R,{self.aws:.1f},N,A"
         sentences.append(f"${mwv_r_core}*{generate_checksum(mwv_r_core)}\r\n")
 
@@ -325,6 +350,7 @@ class SailboatSim:
         hdg_core = f"IIHDG,{self.heading:.1f},,,,"
         sentences.append(f"${hdg_core}*{generate_checksum(hdg_core)}\r\n")
 
+        # TACTICS FIX: Feed it Speed Through Water (Using SOG as STW for now)
         vhw_core = f"IIVHW,{self.heading:.1f},T,,M,{self.sog:.1f},N,,K"
         sentences.append(f"${vhw_core}*{generate_checksum(vhw_core)}\r\n")
 
@@ -334,39 +360,33 @@ class SailboatSim:
         rsa_core = f"IIRSA,{self.rudder_angle:.1f},A,,,"
         sentences.append(f"${rsa_core}*{generate_checksum(rsa_core)}\r\n")
 
-        # Broadcast AIS targets every 6 ticks (~3 seconds) to save bandwidth
         if tick_count % 6 == 0:
             for ship in self.ais_targets:
                 sentences.append(ship.generate_aivdm())
 
         data = "".join(sentences).encode('ascii')
 
-        # Send via TCP
         for client in self.client_sockets[:]:
             try:
                 client.send(data)
             except:
                 self.client_sockets.remove(client)
 
-        # Send via UDP
-        if self.udp_ip:
+        if self.udp_ip_str:
             try:
-                self.udp_socket.sendto(data, (self.udp_ip, self.udp_port))
+                self.udp_socket.sendto(data, (self.udp_ip_str, self.udp_port))
             except Exception:
                 pass
 
-                # Log to GUI occasionally
         if random.random() < 0.2:
             self.ui.log_nmea_out(sentences[0].strip())
-            if tick_count % 6 == 0:
-                self.ui.log_nmea_out(sentences[-1].strip())  # Show an AIS sentence in the log
 
     def tcp_server_thread(self):
         self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self.server_socket.bind(('0.0.0.0', self.tcp_port))
+        self.server_socket.bind(('0.0.0.0', int(self.tcp_port_str)))
         self.server_socket.listen(5)
-        self.ui.log_msg("System", f"TCP Server listening on port {self.tcp_port}")
+        self.ui.log_msg("System", f"TCP Server listening on port {self.tcp_port_str}")
 
         while self.running:
             try:
@@ -411,8 +431,48 @@ class SimGUI:
     def __init__(self, root):
         self.root = root
         self.root.title("IMOCA 60 Simulator - Network Pro")
-        self.sim = SailboatSim(self)
         self.setup_ui()
+        self.load_config()  # Load saved state right after building UI
+        self.sim = SailboatSim(self)
+
+    def load_config(self):
+        if os.path.exists("sim_state.json"):
+            try:
+                with open("sim_state.json", "r") as f:
+                    data = json.load(f)
+                    self.tcp_port_var.set(data.get("tcp_port", "10110"))
+                    self.udp_ip_var.set(data.get("udp_ip", "127.0.0.1"))
+                    self.udp_port_var.set(data.get("udp_port", "10111"))
+                    self.lat_var.set(data.get("lat", "-32.0000"))
+                    self.lon_var.set(data.get("lon", "115.5000"))
+                    self.heading_var.set(data.get("heading", "270"))
+                    self.sea_state_var.set(float(data.get("sea_state", 1.5)))
+                    self.gust_var.set(float(data.get("gust", 1.3)))
+                    self.water_temp_var.set(float(data.get("water_temp", 22.0)))
+                    self.depth_var.set(float(data.get("depth", 150.0)))
+                    self.log_msg("System", "Saved state loaded successfully.")
+            except Exception as e:
+                self.log_msg("Error", f"Could not load state: {e}")
+
+    def save_config(self):
+        data = {
+            "tcp_port": self.tcp_port_var.get(),
+            "udp_ip": self.udp_ip_var.get(),
+            "udp_port": self.udp_port_var.get(),
+            "lat": self.lat_var.get(),
+            "lon": self.lon_var.get(),
+            "heading": self.heading_var.get(),
+            "sea_state": self.sea_state_var.get(),
+            "gust": self.gust_var.get(),
+            "water_temp": self.water_temp_var.get(),
+            "depth": self.depth_var.get()
+        }
+        try:
+            with open("sim_state.json", "w") as f:
+                json.dump(data, f, indent=4)
+            self.log_msg("System", "Settings saved to disk.")
+        except Exception as e:
+            self.log_msg("Error", f"Could not save state: {e}")
 
     def setup_ui(self):
         ctrl_frame = ttk.LabelFrame(self.root, text="Parameters & Network")
@@ -431,7 +491,6 @@ class SimGUI:
         self.tws_var = tk.StringVar(value="15.0")
         self.twd_var = tk.StringVar(value="180.0")
 
-        # Row 0 - Network
         ttk.Label(ctrl_frame, text="TCP Port:").grid(row=0, column=0, sticky=tk.W)
         ttk.Entry(ctrl_frame, textvariable=self.tcp_port_var, width=8).grid(row=0, column=1, sticky=tk.W)
         ttk.Label(ctrl_frame, text="UDP IP:").grid(row=0, column=2, sticky=tk.E)
@@ -439,7 +498,6 @@ class SimGUI:
         ttk.Label(ctrl_frame, text="UDP Port:").grid(row=0, column=4, sticky=tk.E)
         ttk.Entry(ctrl_frame, textvariable=self.udp_port_var, width=8).grid(row=0, column=5, sticky=tk.W)
 
-        # Row 1 - Position & Physics
         ttk.Label(ctrl_frame, text="Lat:").grid(row=1, column=0, sticky=tk.W)
         ttk.Entry(ctrl_frame, textvariable=self.lat_var, width=10).grid(row=1, column=1, sticky=tk.W)
         ttk.Label(ctrl_frame, text="Lon:").grid(row=1, column=2, sticky=tk.E)
@@ -447,7 +505,6 @@ class SimGUI:
         ttk.Label(ctrl_frame, text="Course (T):").grid(row=1, column=4, sticky=tk.E)
         ttk.Entry(ctrl_frame, textvariable=self.heading_var, width=8).grid(row=1, column=5, sticky=tk.W)
 
-        # Row 2 - Environment
         ttk.Label(ctrl_frame, text="Sea State:").grid(row=2, column=0, sticky=tk.W)
         ttk.Scale(ctrl_frame, from_=0, to=5, orient=tk.HORIZONTAL, variable=self.sea_state_var).grid(row=2, column=1)
         ttk.Label(ctrl_frame, text="Gust Mult:").grid(row=2, column=2, sticky=tk.E)
@@ -489,6 +546,7 @@ class SimGUI:
 
     def toggle_sim(self):
         if not self.sim.running:
+            self.save_config()  # Save settings immediately on start
             self.sim.start()
             self.btn_start.config(text="Stop Sim")
         else:
