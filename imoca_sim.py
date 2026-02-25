@@ -1,6 +1,5 @@
 import tkinter as tk
 from tkinter import ttk
-import argparse
 import socket
 import threading
 import time
@@ -9,22 +8,81 @@ import random
 import requests
 import json
 import os
-
+import argparse
 from datetime import datetime
 
-# --- Simplified IMOCA 60 Polar ---
-IMOCA_POLAR = {
-    10: {0: 0.0, 45: 8.5, 90: 13.0, 135: 11.5, 180: 9.5},
-    15: {0: 0.0, 45: 10.5, 90: 17.5, 135: 16.5, 180: 13.0},
-    20: {0: 0.0, 45: 11.0, 90: 22.0, 135: 23.5, 180: 18.0},
-    30: {0: 0.0, 45: 11.5, 90: 26.0, 135: 28.0, 180: 22.0}
+# --- Internal Fallback Polar (High-Res IMOCA 60) ---
+FALLBACK_POLAR = {
+    5.0: {0: 0.0, 35: 4.5, 45: 6.0, 60: 7.0, 75: 7.5, 90: 8.0, 105: 8.0, 120: 7.5, 135: 6.5, 150: 5.5, 165: 4.5,
+          180: 4.0},
+    10.0: {0: 0.0, 35: 8.5, 45: 10.0, 60: 11.5, 75: 12.5, 90: 14.0, 105: 14.5, 120: 14.0, 135: 12.0, 150: 10.5,
+           165: 9.0, 180: 8.0},
+    15.0: {0: 0.0, 35: 10.5, 45: 12.5, 60: 15.0, 75: 18.0, 90: 21.0, 105: 23.0, 120: 22.0, 135: 18.5, 150: 15.0,
+           165: 12.5, 180: 11.0},
+    20.0: {0: 0.0, 35: 11.5, 45: 14.5, 60: 18.0, 75: 23.0, 90: 27.0, 105: 29.0, 120: 28.0, 135: 24.0, 150: 19.0,
+           165: 15.0, 180: 13.0},
+    25.0: {0: 0.0, 35: 12.0, 45: 15.5, 60: 20.0, 75: 26.0, 90: 31.0, 105: 34.0, 120: 33.0, 135: 28.0, 150: 23.0,
+           165: 18.0, 180: 15.0},
+    30.0: {0: 0.0, 35: 12.5, 45: 16.0, 60: 21.0, 75: 27.0, 90: 33.0, 105: 37.0, 120: 36.0, 135: 31.0, 150: 26.0,
+           165: 21.0, 180: 17.0},
+    35.0: {0: 0.0, 35: 12.0, 45: 15.5, 60: 20.5, 75: 26.5, 90: 32.5, 105: 36.0, 120: 35.0, 135: 32.0, 150: 28.0,
+           165: 23.0, 180: 18.0},
+    40.0: {0: 0.0, 35: 10.0, 45: 13.0, 60: 18.0, 75: 24.0, 90: 29.0, 105: 32.0, 120: 31.0, 135: 29.0, 150: 26.0,
+           165: 21.0, 180: 17.0},
+    45.0: {0: 0.0, 35: 8.0, 45: 10.0, 60: 14.0, 75: 19.0, 90: 24.0, 105: 27.0, 120: 26.0, 135: 25.0, 150: 23.0,
+           165: 19.0, 180: 15.0},
+    50.0: {0: 0.0, 35: 5.0, 45: 7.0, 60: 10.0, 75: 14.0, 90: 18.0, 105: 21.0, 120: 21.0, 135: 21.0, 150: 19.0,
+           165: 16.0, 180: 13.0},
+    55.0: {0: 0.0, 35: 2.0, 45: 4.0, 60: 7.0, 75: 10.0, 90: 13.0, 105: 16.0, 120: 16.0, 135: 17.0, 150: 16.0, 165: 14.0,
+           180: 11.0},
+    60.0: {0: 0.0, 35: 0.0, 45: 2.0, 60: 4.0, 75: 7.0, 90: 10.0, 105: 12.0, 120: 13.0, 135: 14.0, 150: 14.0, 165: 12.0,
+           180: 10.0}
 }
 
 
-def get_polar_speed(tws, twa):
+def load_polar_file(filepath):
+    """Attempts to parse a standard OpenCPN .pol file."""
+    polar = {}
+    try:
+        if not os.path.exists(filepath):
+            return None
+
+        with open(filepath, 'r') as f:
+            lines = f.readlines()
+
+        tws_headers = []
+        for line in lines:
+            line = line.strip()
+            if not line or line.startswith('#'):
+                continue
+
+            parts = line.split()
+            # Detect header row (TWA/TWS followed by wind speeds)
+            if 'TWA/TWS' in parts[0].upper() or 'TWA\\TWS' in parts[0].upper():
+                tws_headers = [float(x) for x in parts[1:]]
+                for tws in tws_headers:
+                    polar[tws] = {}
+                continue
+
+            # Parse data rows
+            if tws_headers and len(parts) > 1:
+                twa = float(parts[0])
+                for i, speed_str in enumerate(parts[1:]):
+                    if i < len(tws_headers):
+                        polar[tws_headers[i]][twa] = float(speed_str)
+
+        return polar if polar else None
+    except Exception as e:
+        print(f"Failed to parse polar file: {e}")
+        return None
+
+
+def get_polar_speed(tws, twa, active_polar):
+    """Interpolates boat speed using the active dynamic polar dictionary."""
     twa = abs(twa) % 360
     if twa > 180: twa = 360 - twa
-    tws_keys = sorted(IMOCA_POLAR.keys())
+
+    tws_keys = sorted(active_polar.keys())
     if tws <= tws_keys[0]:
         tws_low, tws_high = tws_keys[0], tws_keys[0]
     elif tws >= tws_keys[-1]:
@@ -32,7 +90,8 @@ def get_polar_speed(tws, twa):
     else:
         tws_low = max([k for k in tws_keys if k <= tws])
         tws_high = min([k for k in tws_keys if k >= tws])
-    twa_keys = sorted(IMOCA_POLAR[tws_keys[0]].keys())
+
+    twa_keys = sorted(active_polar[tws_keys[0]].keys())
     if twa <= twa_keys[0]:
         twa_low, twa_high = twa_keys[0], twa_keys[0]
     elif twa >= twa_keys[-1]:
@@ -45,8 +104,8 @@ def get_polar_speed(tws, twa):
         if x1 == x2: return y1
         return y1 + ((x - x1) / (x2 - x1)) * (y2 - y1)
 
-    speed_low_tws = interp1d(twa, twa_low, twa_high, IMOCA_POLAR[tws_low][twa_low], IMOCA_POLAR[tws_low][twa_high])
-    speed_high_tws = interp1d(twa, twa_low, twa_high, IMOCA_POLAR[tws_high][twa_low], IMOCA_POLAR[tws_high][twa_high])
+    speed_low_tws = interp1d(twa, twa_low, twa_high, active_polar[tws_low][twa_low], active_polar[tws_low][twa_high])
+    speed_high_tws = interp1d(twa, twa_low, twa_high, active_polar[tws_high][twa_low], active_polar[tws_high][twa_high])
     return interp1d(tws, tws_low, tws_high, speed_low_tws, speed_high_tws)
 
 
@@ -135,6 +194,15 @@ class SailboatSim:
         self.server_socket = None
         self.udp_socket = None
         self.client_sockets = []
+
+        # Load Polar
+        external_polar = load_polar_file("imoca60.pol")
+        if external_polar:
+            self.active_polar = external_polar
+            print("Successfully loaded external imoca60.pol")
+        else:
+            self.active_polar = FALLBACK_POLAR
+            print("Using internal fallback polar")
 
         # Boat State
         self.lat = -32.0
@@ -226,7 +294,6 @@ class SailboatSim:
         threading.Thread(target=fetch, daemon=True).start()
 
     def save_state_from_thread(self):
-        """Thread-safe state saving using cached parameters."""
         data = {
             "tcp_port": self.tcp_port_str,
             "udp_ip": self.udp_ip_str,
@@ -240,10 +307,10 @@ class SailboatSim:
             "depth": self.depth_base
         }
         try:
-            with open("sim_state.json", "w") as f:
+            with open(self.ui.config_file, "w") as f:
                 json.dump(data, f, indent=4)
         except:
-            pass  # Ignore write collisions during rapid looping
+            pass
 
     def physics_loop(self):
         dt = 0.5
@@ -269,7 +336,9 @@ class SailboatSim:
                 current_tws += gust
 
             twa_rel = (self.twd - self.heading + 360) % 360
-            self.sog = get_polar_speed(current_tws, twa_rel)
+
+            # Use active polar (file or fallback)
+            self.sog = get_polar_speed(current_tws, twa_rel, self.active_polar)
 
             twa_rad = math.radians(twa_rel)
             wind_x = current_tws * math.cos(twa_rad)
@@ -312,7 +381,6 @@ class SailboatSim:
             self.ui.update_readouts(self.sog, self.heading, self.pitch, self.roll, self.lat, self.lon, self.aws,
                                     self.awa, self.rudder_angle)
 
-            # Save position to JSON every 5 seconds (10 ticks at 0.5 dt)
             if tick_count % 10 == 0 and tick_count > 0:
                 self.save_state_from_thread()
 
@@ -332,7 +400,16 @@ class SailboatSim:
         rmc_core = f"GPRMC,{time_str},A,{lat_str},{lon_str},{self.sog:.1f},{self.heading:.1f},{date_str},,,"
         sentences.append(f"${rmc_core}*{generate_checksum(rmc_core)}\r\n")
 
-        # Let Tactics calculate True Wind itself based on VHW and MWV (Apparent)
+        gsa_core = "GPGSA,A,3,01,02,03,04,05,06,07,08,09,10,,,1.5,1.0,1.0"
+        sentences.append(f"${gsa_core}*{generate_checksum(gsa_core)}\r\n")
+
+        gsv1_core = "GPGSV,3,1,10,01,45,090,45,02,75,180,50,03,30,270,40,04,60,045,48"
+        sentences.append(f"${gsv1_core}*{generate_checksum(gsv1_core)}\r\n")
+        gsv2_core = "GPGSV,3,2,10,05,80,315,52,06,20,135,38,07,55,225,44,08,40,300,42"
+        sentences.append(f"${gsv2_core}*{generate_checksum(gsv2_core)}\r\n")
+        gsv3_core = "GPGSV,3,3,10,09,65,015,49,10,25,100,39"
+        sentences.append(f"${gsv3_core}*{generate_checksum(gsv3_core)}\r\n")
+
         mwv_r_core = f"IIMWV,{self.awa:.1f},R,{self.aws:.1f},N,A"
         sentences.append(f"${mwv_r_core}*{generate_checksum(mwv_r_core)}\r\n")
 
@@ -350,7 +427,6 @@ class SailboatSim:
         hdg_core = f"IIHDG,{self.heading:.1f},,,,"
         sentences.append(f"${hdg_core}*{generate_checksum(hdg_core)}\r\n")
 
-        # TACTICS FIX: Feed it Speed Through Water (Using SOG as STW for now)
         vhw_core = f"IIVHW,{self.heading:.1f},T,,M,{self.sog:.1f},N,,K"
         sentences.append(f"${vhw_core}*{generate_checksum(vhw_core)}\r\n")
 
@@ -428,17 +504,18 @@ class SailboatSim:
 
 
 class SimGUI:
-    def __init__(self, root):
+    def __init__(self, root, config_file="sim_state.json"):
         self.root = root
         self.root.title("IMOCA 60 Simulator - Network Pro")
+        self.config_file = config_file
         self.setup_ui()
-        self.load_config()  # Load saved state right after building UI
+        self.load_config()
         self.sim = SailboatSim(self)
 
     def load_config(self):
-        if os.path.exists("sim_state.json"):
+        if os.path.exists(self.config_file):
             try:
-                with open("sim_state.json", "r") as f:
+                with open(self.config_file, "r") as f:
                     data = json.load(f)
                     self.tcp_port_var.set(data.get("tcp_port", "10110"))
                     self.udp_ip_var.set(data.get("udp_ip", "127.0.0.1"))
@@ -450,7 +527,7 @@ class SimGUI:
                     self.gust_var.set(float(data.get("gust", 1.3)))
                     self.water_temp_var.set(float(data.get("water_temp", 22.0)))
                     self.depth_var.set(float(data.get("depth", 150.0)))
-                    self.log_msg("System", "Saved state loaded successfully.")
+                    self.log_msg("System", f"Saved state loaded from {self.config_file}")
             except Exception as e:
                 self.log_msg("Error", f"Could not load state: {e}")
 
@@ -468,9 +545,9 @@ class SimGUI:
             "depth": self.depth_var.get()
         }
         try:
-            with open("sim_state.json", "w") as f:
+            with open(self.config_file, "w") as f:
                 json.dump(data, f, indent=4)
-            self.log_msg("System", "Settings saved to disk.")
+            self.log_msg("System", f"Settings saved to {self.config_file}")
         except Exception as e:
             self.log_msg("Error", f"Could not save state: {e}")
 
@@ -546,7 +623,7 @@ class SimGUI:
 
     def toggle_sim(self):
         if not self.sim.running:
-            self.save_config()  # Save settings immediately on start
+            self.save_config()
             self.sim.start()
             self.btn_start.config(text="Stop Sim")
         else:
@@ -582,6 +659,10 @@ class SimGUI:
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="IMOCA 60 Sailboat Simulator")
+    parser.add_argument("--config", type=str, default="sim_state.json", help="Path to the state/config JSON file")
+    args = parser.parse_args()
+
     root = tk.Tk()
-    app = SimGUI(root)
+    app = SimGUI(root, config_file=args.config)
     root.mainloop()
