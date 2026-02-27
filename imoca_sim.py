@@ -182,7 +182,7 @@ class SailboatSim:
         self.sog = 0.0
         self.rudder_angle = 0.0
         self.turn_rate = 0.0
-        self.cog = 270.0 # Track actual direction of movement
+        self.cog = 270.0
         
         # Environment State
         self.base_tws = 15.0
@@ -309,18 +309,21 @@ class SailboatSim:
             is_anchored = self.ui.anchor_mode_var.get()
 
             if is_anchored:
-                # --- ANCHOR MODE PHYSICS ---
-                self.sog = current_tws * 0.02 # Drift speed scales with wind
-                # Bow swings into the wind with some wandering
-                self.heading = (self.twd - 180 + (math.sin(t * 0.4) * 20)) % 360
-                self.cog = self.twd # Movement is directly downwind
+                # Drift speed scales with wind
+                self.sog = current_tws * 0.02 
+                
+                # Bow swings to face INTO the wind (TWD) with some wandering
+                self.heading = (self.twd + (math.sin(t * 0.4) * 20)) % 360
+                
+                # The boat is pushed DOWNWIND (TWD + 180)
+                self.cog = (self.twd + 180) % 360 
                 
                 twa_rel = (self.twd - self.heading + 360) % 360
                 twa_rad = math.radians(twa_rel)
                 wind_x = current_tws * math.cos(twa_rad)
                 wind_y = current_tws * math.sin(twa_rad)
                 
-                # Because we are drifting backwards, headwind decreases slightly
+                # Because we are drifting backward, headwind decreases slightly
                 app_x = wind_x - self.sog 
                 app_y = wind_y
                 
@@ -329,16 +332,14 @@ class SailboatSim:
                 self.pitch = math.cos(t * 2.0) * self.sea_state * 0.5
 
             else:
-                # --- SAILING PHYSICS ---
                 twa_rel = (self.twd - self.heading + 360) % 360
                 self.sog = get_polar_speed(current_tws, twa_rel, self.active_polar)
-                self.cog = self.heading # Movement is directly forward
+                self.cog = self.heading 
                 
                 twa_rad = math.radians(twa_rel)
                 wind_x = current_tws * math.cos(twa_rad)
                 wind_y = current_tws * math.sin(twa_rad)
                 
-                # Sailing forward increases headwind
                 app_x = wind_x + self.sog 
                 app_y = wind_y
 
@@ -364,7 +365,6 @@ class SailboatSim:
                 self.heading += self.turn_rate * dt
                 self.heading %= 360
 
-            # --- SHARED UPDATES ---
             self.aws = math.sqrt(app_x**2 + app_y**2)
             self.awa = math.degrees(math.atan2(app_y, app_x)) % 360
 
@@ -392,7 +392,6 @@ class SailboatSim:
         
         sentences = []
         
-        # Notice we are now sending self.cog in field 8 instead of self.heading
         lat_str = format_lat_lon(self.lat, True)
         lon_str = format_lat_lon(self.lon, False)
         rmc_core = f"GPRMC,{time_str},A,{lat_str},{lon_str},{self.sog:.1f},{self.cog:.1f},{date_str},,,"
@@ -408,7 +407,6 @@ class SailboatSim:
         gsv3_core = "GPGSV,3,3,10,09,65,015,49,10,25,100,39"
         sentences.append(f"${gsv3_core}*{generate_checksum(gsv3_core)}\r\n")
 
-        # Optional True Wind broadcast based on UI toggle
         if self.ui.send_tws_var.get():
             mwv_t_core = f"IIMWV,{twa_rel:.1f},T,{tws:.1f},N,A"
             sentences.append(f"${mwv_t_core}*{generate_checksum(mwv_t_core)}\r\n")
@@ -427,8 +425,10 @@ class SailboatSim:
         dpt_core = f"IIDPT,{self.depth_current:.1f},0.0"
         sentences.append(f"${dpt_core}*{generate_checksum(dpt_core)}\r\n")
 
-        hdg_core = f"IIHDG,{self.heading:.1f},,,,"
-        sentences.append(f"${hdg_core}*{generate_checksum(hdg_core)}\r\n")
+        # --- HDT UPDATE ---
+        # Changed from IIHDG to IIHDT to simulate a high-end True Heading compass
+        hdt_core = f"IIHDT,{self.heading:.1f},T"
+        sentences.append(f"${hdt_core}*{generate_checksum(hdt_core)}\r\n")
 
         vhw_core = f"IIVHW,{self.heading:.1f},T,,M,{self.sog:.1f},N,,K"
         sentences.append(f"${vhw_core}*{generate_checksum(vhw_core)}\r\n")
@@ -600,7 +600,7 @@ class SimGUI:
         ttk.Label(ctrl_frame, text="Wind (Kn):").grid(row=2, column=4, sticky=tk.E)
         ttk.Label(ctrl_frame, textvariable=self.tws_var).grid(row=2, column=5, sticky=tk.W)
 
-        # Row 3 (New Toggles)
+        # Row 3
         ttk.Checkbutton(ctrl_frame, text="Tx True Wind (MWV-T)", variable=self.send_tws_var).grid(row=3, column=0, columnspan=2, sticky=tk.W, pady=5)
         ttk.Checkbutton(ctrl_frame, text="Anchor Mode (Drift)", variable=self.anchor_mode_var).grid(row=3, column=2, columnspan=2, sticky=tk.W, pady=5)
 
