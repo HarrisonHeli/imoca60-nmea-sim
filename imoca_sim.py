@@ -32,29 +32,21 @@ def load_polar_file(filepath):
     try:
         if not os.path.exists(filepath):
             return None
-            
         with open(filepath, 'r') as f:
             lines = f.readlines()
-            
         tws_headers = []
         for line in lines:
             line = line.strip()
-            if not line or line.startswith('#'):
-                continue
-                
+            if not line or line.startswith('#'): continue
             parts = line.split()
             if 'TWA/TWS' in parts[0].upper() or 'TWA\\TWS' in parts[0].upper():
                 tws_headers = [float(x) for x in parts[1:]]
-                for tws in tws_headers:
-                    polar[tws] = {}
+                for tws in tws_headers: polar[tws] = {}
                 continue
-                
             if tws_headers and len(parts) > 1:
                 twa = float(parts[0])
                 for i, speed_str in enumerate(parts[1:]):
-                    if i < len(tws_headers):
-                        polar[tws_headers[i]][twa] = float(speed_str)
-                        
+                    if i < len(tws_headers): polar[tws_headers[i]][twa] = float(speed_str)
         return polar if polar else None
     except Exception as e:
         print(f"Failed to parse polar file: {e}")
@@ -63,25 +55,21 @@ def load_polar_file(filepath):
 def get_polar_speed(tws, twa, active_polar):
     twa = abs(twa) % 360
     if twa > 180: twa = 360 - twa
-    
     tws_keys = sorted(active_polar.keys())
     if tws <= tws_keys[0]: tws_low, tws_high = tws_keys[0], tws_keys[0]
     elif tws >= tws_keys[-1]: tws_low, tws_high = tws_keys[-1], tws_keys[-1]
     else:
         tws_low = max([k for k in tws_keys if k <= tws])
         tws_high = min([k for k in tws_keys if k >= tws])
-
     twa_keys = sorted(active_polar[tws_keys[0]].keys())
     if twa <= twa_keys[0]: twa_low, twa_high = twa_keys[0], twa_keys[0]
     elif twa >= twa_keys[-1]: twa_low, twa_high = twa_keys[-1], twa_keys[-1]
     else:
         twa_low = max([k for k in twa_keys if k <= twa])
         twa_high = min([k for k in twa_keys if k >= twa])
-
     def interp1d(x, x1, x2, y1, y2):
         if x1 == x2: return y1
         return y1 + ((x - x1) / (x2 - x1)) * (y2 - y1)
-
     speed_low_tws = interp1d(twa, twa_low, twa_high, active_polar[tws_low][twa_low], active_polar[tws_low][twa_high])
     speed_high_tws = interp1d(twa, twa_low, twa_high, active_polar[tws_high][twa_low], active_polar[tws_high][twa_high])
     return interp1d(tws, tws_low, tws_high, speed_low_tws, speed_high_tws)
@@ -106,20 +94,16 @@ def format_lat_lon(dec_deg, is_lat):
 
 def int_to_bin(val, bits):
     val = int(val)
-    if val < 0:
-        val = (1 << bits) + val 
+    if val < 0: val = (1 << bits) + val 
     return f"{val:0{bits}b}"
 
 def to_6bit_ascii(bit_str):
-    while len(bit_str) % 6 != 0:
-        bit_str += '0'
+    while len(bit_str) % 6 != 0: bit_str += '0'
     res = ""
     for i in range(0, len(bit_str), 6):
         val = int(bit_str[i:i+6], 2)
-        if val < 40:
-            res += chr(val + 48)
-        else:
-            res += chr(val + 56)
+        if val < 40: res += chr(val + 48)
+        else: res += chr(val + 56)
     return res
 
 class VirtualShip:
@@ -153,7 +137,6 @@ class VirtualShip:
         payload += int_to_bin(0, 3) 
         payload += int_to_bin(0, 1) 
         payload += int_to_bin(0, 19) 
-        
         ascii_payload = to_6bit_ascii(payload)
         sentence = f"!AIVDM,1,1,,A,{ascii_payload},0"
         return f"{sentence}*{generate_checksum(sentence)}\r\n"
@@ -174,17 +157,16 @@ class SailboatSim:
             self.active_polar = FALLBACK_POLAR
             print("Using internal fallback polar")
         
-        # Boat State
         self.lat = -32.1 
         self.lon = 115.4
         self.heading = 270.0
         self.target_heading = 270.0
-        self.sog = 0.0
+        self.stw = 0.0 # Speed Through Water
+        self.sog = 0.0 # Speed Over Ground
+        self.cog = 270.0
         self.rudder_angle = 0.0
         self.turn_rate = 0.0
-        self.cog = 270.0
         
-        # Environment State
         self.base_tws = 15.0
         self.twd = 180.0
         self.temp_c = 20.0
@@ -199,9 +181,12 @@ class SailboatSim:
         self.aws = 0.0
         self.awa = 0.0
         
+        # New Current Variables
+        self.current_set = 0.0
+        self.current_drift = 0.0
+        
         self.last_weather_update = 0
         self.ais_targets = []
-        
         self.tcp_port_str = ""
         self.udp_ip_str = ""
         self.udp_port_str = ""
@@ -211,7 +196,6 @@ class SailboatSim:
         self.tcp_port_str = self.ui.tcp_port_var.get()
         self.udp_ip_str = self.ui.udp_ip_var.get()
         self.udp_port_str = self.ui.udp_port_var.get()
-        
         self.tcp_port = int(self.tcp_port_str)
         self.udp_port = int(self.udp_port_str)
         
@@ -229,7 +213,6 @@ class SailboatSim:
 
         self.udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.udp_socket.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-        
         self.last_weather_update = 0 
         
         threading.Thread(target=self.tcp_server_thread, daemon=True).start()
@@ -246,20 +229,32 @@ class SailboatSim:
         def fetch():
             try:
                 self.ui.log_msg("System", "Fetching weather data from Open-Meteo...")
+                # Atmospheric Weather
                 url = f"https://api.open-meteo.com/v1/forecast?latitude={self.lat}&longitude={self.lon}&current=temperature_2m,surface_pressure,wind_speed_10m,wind_direction_10m&wind_speed_unit=kn"
                 response = requests.get(url, timeout=5).json()
                 current = response['current']
-                
                 self.base_tws = current['wind_speed_10m']
                 self.twd = current['wind_direction_10m']
                 self.temp_c = current['temperature_2m']
                 self.pressure_hpa = current['surface_pressure']
                 
-                self.ui.log_msg("System", f"Weather updated: {self.base_tws}kn @ {self.twd}°, {self.temp_c}°C")
+                # Ocean Currents via Marine API
+                marine_url = f"https://marine-api.open-meteo.com/v1/marine?latitude={self.lat}&longitude={self.lon}&current=ocean_current_velocity,ocean_current_direction&velocity_unit=kn"
+                marine_response = requests.get(marine_url, timeout=5).json()
+                if 'current' in marine_response:
+                    self.current_drift = marine_response['current'].get('ocean_current_velocity', 0.0)
+                    self.current_set = marine_response['current'].get('ocean_current_direction', 0.0)
+                else:
+                    self.current_drift = 0.0
+                    self.current_set = 0.0
+                
+                self.ui.log_msg("System", f"Weather: {self.base_tws}kn @ {self.twd}° | Current: {self.current_drift}kn -> {self.current_set}°")
                 self.ui.tws_var.set(f"{self.base_tws:.1f}")
                 self.ui.twd_var.set(f"{self.twd:.1f}")
+                self.ui.set_var.set(f"{self.current_set:.1f}")
+                self.ui.drift_var.set(f"{self.current_drift:.1f}")
             except Exception as e:
-                self.ui.log_msg("Error", f"Failed to fetch weather: {e}")
+                self.ui.log_msg("Error", f"Failed to fetch environmental data: {e}")
         threading.Thread(target=fetch, daemon=True).start()
 
     def save_state_from_thread(self):
@@ -298,7 +293,6 @@ class SailboatSim:
             self.gust_multiplier = float(self.ui.gust_var.get())
             self.water_temp = float(self.ui.water_temp_var.get())
             self.depth_base = float(self.ui.depth_var.get())
-            
             self.depth_current = self.depth_base + (math.sin(t * 0.2) * self.sea_state * 0.5)
 
             current_tws = self.base_tws
@@ -306,51 +300,60 @@ class SailboatSim:
                 gust = (random.random() * (self.gust_multiplier - 1.0)) * self.base_tws
                 current_tws += gust
 
-            is_anchored = self.ui.anchor_mode_var.get()
+            # Ocean Current Vector (flowing TO)
+            curr_x = self.current_drift * math.sin(math.radians(self.current_set))
+            curr_y = self.current_drift * math.cos(math.radians(self.current_set))
 
-            if is_anchored:
-                # Drift speed scales with wind
-                self.sog = current_tws * 0.02 
+            # Wind Vector over ground (blowing FROM)
+            wind_x = current_tws * math.sin(math.radians(self.twd))
+            wind_y = current_tws * math.cos(math.radians(self.twd))
+
+            if self.ui.anchor_mode_var.get():
+                self.stw = 0.0 
+                # Anchor drift pushes boat downwind (TWD + 180)
+                wind_drift_speed = current_tws * 0.02 
+                wind_drift_dir = (self.twd + 180) % 360
+                wd_x = wind_drift_speed * math.sin(math.radians(wind_drift_dir))
+                wd_y = wind_drift_speed * math.cos(math.radians(wind_drift_dir))
                 
-                # Bow swings to face INTO the wind (TWD) with some wandering
+                # Combine wind drift and ocean current
+                sog_x = wd_x + curr_x
+                sog_y = wd_y + curr_y
+                self.sog = math.sqrt(sog_x**2 + sog_y**2)
+                self.cog = math.degrees(math.atan2(sog_x, sog_y)) % 360
                 self.heading = (self.twd + (math.sin(t * 0.4) * 20)) % 360
-                
-                # The boat is pushed DOWNWIND (TWD + 180)
-                self.cog = (self.twd + 180) % 360 
-                
-                twa_rel = (self.twd - self.heading + 360) % 360
-                twa_rad = math.radians(twa_rel)
-                wind_x = current_tws * math.cos(twa_rad)
-                wind_y = current_tws * math.sin(twa_rad)
-                
-                # Because we are drifting backward, headwind decreases slightly
-                app_x = wind_x - self.sog 
-                app_y = wind_y
                 
                 self.rudder_angle = 0.0
                 self.roll = math.sin(t * 1.5) * self.sea_state * 0.5
                 self.pitch = math.cos(t * 2.0) * self.sea_state * 0.5
-
             else:
-                twa_rel = (self.twd - self.heading + 360) % 360
-                self.sog = get_polar_speed(current_tws, twa_rel, self.active_polar)
-                self.cog = self.heading 
+                # Calculate True Wind over Water (TWW) for Polar Lookup
+                tww_x = wind_x - curr_x
+                tww_y = wind_y - curr_y
+                tww_speed = math.sqrt(tww_x**2 + tww_y**2)
+                tww_dir = math.degrees(math.atan2(tww_x, tww_y)) % 360
+
+                twa_rel = (tww_dir - self.heading + 360) % 360
+                self.stw = get_polar_speed(tww_speed, twa_rel, self.active_polar)
                 
-                twa_rad = math.radians(twa_rel)
-                wind_x = current_tws * math.cos(twa_rad)
-                wind_y = current_tws * math.sin(twa_rad)
+                # Boat Vector through water
+                boat_water_x = self.stw * math.sin(math.radians(self.heading))
+                boat_water_y = self.stw * math.cos(math.radians(self.heading))
                 
-                app_x = wind_x + self.sog 
-                app_y = wind_y
+                # SOG/COG Vector = Boat over water + Current over ground
+                sog_x = boat_water_x + curr_x
+                sog_y = boat_water_y + curr_y
+                self.sog = math.sqrt(sog_x**2 + sog_y**2)
+                self.cog = math.degrees(math.atan2(sog_x, sog_y)) % 360
 
                 twa_sym = twa_rel if twa_rel <= 180 else twa_rel - 360
                 heel_factor = math.sin(math.radians(abs(twa_sym))) 
                 base_roll = heel_factor * (current_tws * 0.8) 
                 wave_roll = math.sin(t * 1.5) * self.sea_state * 2.0
                 self.roll = (base_roll + wave_roll) * (1 if twa_sym > 0 else -1)
-                self.pitch = math.cos(t * 2.0) * self.sea_state * (self.sog / 10.0)
+                self.pitch = math.cos(t * 2.0) * self.sea_state * (self.stw / 10.0)
 
-                weather_helm_force = self.roll * (self.sog / 15.0) * 0.4
+                weather_helm_force = self.roll * (self.stw / 15.0) * 0.4
                 natural_turn_rate = -weather_helm_force 
                 hdg_error = (self.target_heading - self.heading + 180) % 360 - 180
                 rudder_target = (hdg_error * 2.0) + (weather_helm_force * 1.5)
@@ -359,14 +362,20 @@ class SailboatSim:
                 self.rudder_angle += math.copysign(min(15.0 * dt, abs(rudder_diff)), rudder_diff)
                 self.rudder_angle = max(-35.0, min(35.0, self.rudder_angle))
 
-                rudder_effectiveness = self.rudder_angle * 0.2 * (self.sog / 10.0 + 0.1)
+                rudder_effectiveness = self.rudder_angle * 0.2 * (self.stw / 10.0 + 0.1)
                 self.turn_rate = rudder_effectiveness + natural_turn_rate
-                
                 self.heading += self.turn_rate * dt
                 self.heading %= 360
 
+            # Apparent Wind = Wind over Ground + Boat over Ground
+            boat_x = self.sog * math.sin(math.radians(self.cog))
+            boat_y = self.sog * math.cos(math.radians(self.cog))
+            app_x = wind_x + boat_x
+            app_y = wind_y + boat_y
+            
             self.aws = math.sqrt(app_x**2 + app_y**2)
-            self.awa = math.degrees(math.atan2(app_y, app_x)) % 360
+            awa_true = math.degrees(math.atan2(app_x, app_y)) % 360
+            self.awa = (awa_true - self.heading + 360) % 360
 
             dist_nm = self.sog * (dt / 3600.0)
             self.lat += (dist_nm * math.cos(math.radians(self.cog))) / 60.0
@@ -375,8 +384,8 @@ class SailboatSim:
             for ship in self.ais_targets:
                 ship.update(dt)
 
-            self.broadcast_nmea(current_tws, twa_rel, tick_count)
-            self.ui.update_readouts(self.sog, self.heading, self.pitch, self.roll, self.lat, self.lon, self.aws, self.awa, self.rudder_angle)
+            self.broadcast_nmea(current_tws, (self.twd - self.heading + 360) % 360, tick_count)
+            self.ui.update_readouts(self.sog, self.stw, self.heading, self.pitch, self.roll, self.lat, self.lon, self.aws, self.awa, self.rudder_angle)
             
             if tick_count % 10 == 0 and tick_count > 0:
                 self.save_state_from_thread()
@@ -425,12 +434,11 @@ class SailboatSim:
         dpt_core = f"IIDPT,{self.depth_current:.1f},0.0"
         sentences.append(f"${dpt_core}*{generate_checksum(dpt_core)}\r\n")
 
-        # --- HDT UPDATE ---
-        # Changed from IIHDG to IIHDT to simulate a high-end True Heading compass
         hdt_core = f"IIHDT,{self.heading:.1f},T"
         sentences.append(f"${hdt_core}*{generate_checksum(hdt_core)}\r\n")
 
-        vhw_core = f"IIVHW,{self.heading:.1f},T,,M,{self.sog:.1f},N,,K"
+        # STW output via IIVHW
+        vhw_core = f"IIVHW,{self.heading:.1f},T,,M,{self.stw:.1f},N,,K"
         sentences.append(f"${vhw_core}*{generate_checksum(vhw_core)}\r\n")
 
         xdr_core = f"IIXDR,A,{self.pitch:.1f},D,PITCH,A,{self.roll:.1f},D,ROLL"
@@ -575,6 +583,8 @@ class SimGUI:
         self.twd_var = tk.StringVar(value="180.0")
         self.send_tws_var = tk.BooleanVar(value=False)
         self.anchor_mode_var = tk.BooleanVar(value=False)
+        self.set_var = tk.StringVar(value="0.0")
+        self.drift_var = tk.StringVar(value="0.0")
 
         # Row 0
         ttk.Label(ctrl_frame, text="TCP Port:").grid(row=0, column=0, sticky=tk.W)
@@ -599,24 +609,30 @@ class SimGUI:
         ttk.Scale(ctrl_frame, from_=1.0, to=2.5, orient=tk.HORIZONTAL, variable=self.gust_var).grid(row=2, column=3)
         ttk.Label(ctrl_frame, text="Wind (Kn):").grid(row=2, column=4, sticky=tk.E)
         ttk.Label(ctrl_frame, textvariable=self.tws_var).grid(row=2, column=5, sticky=tk.W)
+        ttk.Label(ctrl_frame, text="Drift (Kn):").grid(row=2, column=6, sticky=tk.E)
+        ttk.Label(ctrl_frame, textvariable=self.drift_var).grid(row=2, column=7, sticky=tk.W)
 
         # Row 3
-        ttk.Checkbutton(ctrl_frame, text="Tx True Wind (MWV-T)", variable=self.send_tws_var).grid(row=3, column=0, columnspan=2, sticky=tk.W, pady=5)
-        ttk.Checkbutton(ctrl_frame, text="Anchor Mode (Drift)", variable=self.anchor_mode_var).grid(row=3, column=2, columnspan=2, sticky=tk.W, pady=5)
+        ttk.Checkbutton(ctrl_frame, text="Tx True Wind", variable=self.send_tws_var).grid(row=3, column=0, columnspan=2, sticky=tk.W, pady=5)
+        ttk.Checkbutton(ctrl_frame, text="Anchor Mode", variable=self.anchor_mode_var).grid(row=3, column=2, columnspan=2, sticky=tk.W, pady=5)
+        ttk.Label(ctrl_frame, text="Set (T):").grid(row=3, column=6, sticky=tk.E)
+        ttk.Label(ctrl_frame, textvariable=self.set_var).grid(row=3, column=7, sticky=tk.W)
 
         self.btn_start = ttk.Button(ctrl_frame, text="Start Sim", command=self.toggle_sim)
-        self.btn_start.grid(row=0, column=6, rowspan=4, padx=10, ipady=15)
+        self.btn_start.grid(row=0, column=8, rowspan=4, padx=10, ipady=15)
 
         readout_frame = ttk.LabelFrame(self.root, text="Live Telemetry")
         readout_frame.pack(fill=tk.X, padx=5, pady=0)
         self.lbl_sog = ttk.Label(readout_frame, text="SOG: 0.0 kn")
         self.lbl_sog.grid(row=0, column=0, padx=10)
+        self.lbl_stw = ttk.Label(readout_frame, text="STW: 0.0 kn")
+        self.lbl_stw.grid(row=0, column=1, padx=10)
         self.lbl_hdg = ttk.Label(readout_frame, text="HDG: 0.0°")
-        self.lbl_hdg.grid(row=0, column=1, padx=10)
+        self.lbl_hdg.grid(row=0, column=2, padx=10)
         self.lbl_rudder = ttk.Label(readout_frame, text="Rudder: 0.0°")
-        self.lbl_rudder.grid(row=0, column=2, padx=10)
+        self.lbl_rudder.grid(row=0, column=3, padx=10)
         self.lbl_aws = ttk.Label(readout_frame, text="AWS: 0.0 kn")
-        self.lbl_aws.grid(row=0, column=3, padx=10)
+        self.lbl_aws.grid(row=0, column=4, padx=10)
         
         self.lbl_pitch = ttk.Label(readout_frame, text="Pitch: 0.0°")
         self.lbl_pitch.grid(row=1, column=0, padx=10)
@@ -645,8 +661,9 @@ class SimGUI:
             self.sim.stop()
             self.btn_start.config(text="Start Sim")
 
-    def update_readouts(self, sog, hdg, pitch, roll, lat, lon, aws, awa, rudder):
+    def update_readouts(self, sog, stw, hdg, pitch, roll, lat, lon, aws, awa, rudder):
         self.root.after(0, lambda: self.lbl_sog.config(text=f"SOG: {sog:.1f} kn"))
+        self.root.after(0, lambda: self.lbl_stw.config(text=f"STW: {stw:.1f} kn"))
         self.root.after(0, lambda: self.lbl_hdg.config(text=f"HDG: {hdg:.1f}°"))
         self.root.after(0, lambda: self.lbl_pitch.config(text=f"Pitch: {pitch:.1f}°"))
         self.root.after(0, lambda: self.lbl_roll.config(text=f"Roll: {roll:.1f}°"))
