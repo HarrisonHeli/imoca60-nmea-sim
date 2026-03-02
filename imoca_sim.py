@@ -241,9 +241,11 @@ class SailboatSim:
                 # Ocean Currents via Marine API
                 marine_url = f"https://marine-api.open-meteo.com/v1/marine?latitude={self.lat}&longitude={self.lon}&current=ocean_current_velocity,ocean_current_direction&velocity_unit=kn"
                 marine_response = requests.get(marine_url, timeout=5).json()
+
                 if 'current' in marine_response:
-                    self.current_drift = marine_response['current'].get('ocean_current_velocity', 0.0)
-                    self.current_set = marine_response['current'].get('ocean_current_direction', 0.0)
+                    # Using 'or 0.0' catches literal None/null responses from the API
+                    self.current_drift = marine_response['current'].get('ocean_current_velocity') or 0.0
+                    self.current_set = marine_response['current'].get('ocean_current_direction') or 0.0
                 else:
                     self.current_drift = 0.0
                     self.current_set = 0.0
